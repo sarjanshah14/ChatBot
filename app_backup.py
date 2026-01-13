@@ -1,175 +1,360 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import Optional
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
+from typing import Optional, Dict
 from contextlib import asynccontextmanager
 import time
 import asyncio
+import logging
 from chatbot import HandbookChatbot
 import config
 
-# Global chatbot instance
+# Configure logging
+logging.basicConfig(
+    level=getattr(logging, config.LOG_LEVEL),
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Global instances
 chatbot = None
 semaphore = None
+request_times = []  # Track response times for monitoring
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
+    """Startup and shutdown lifecycle"""
     global chatbot, semaphore
-    print("🚀 Starting Employee Handbook Chatbot API...")
-    print("=" * 50)
-    chatbot = HandbookChatbot()
-    semaphore = asyncio.Semaphore(config.MAX_CONCURRENT_REQUESTS)
-    success = chatbot.initialize()
-    if not success:
-        print("❌ Failed to initialize chatbot")
-    print("=" * 50)
+    
+    # Startup
+    logger.info("=" * 60)
+    logger.info("🚀 Starting Employee Handbook Chatbot API v2.0")
+    logger.info("=" * 60)
+    
+    try:
+        chatbot = HandbookChatbot()
+        semaphore = asyncio.Semaphore(config.MAX_CONCURRENT_REQUESTS)
+        
+        success = chatbot.initialize()
+        if not success:
+            logger.error("❌ Failed to initialize chatbot")
+            raise RuntimeError("Chatbot initialization failed")
+        
+        logger.info("✅ API ready to accept requests")
+        logger.info("=" * 60)
+        
+    except Exception as e:
+        logger.error(f"Startup error: {e}")
+        raise
     
     yield
     
-    # Shutdown (cleanup if needed)
-    print("Shutting down...")
+    # Shutdown
+    logger.info("🛑 Shutting down gracefully...")
+    # Add cleanup if needed (e.g., close connections)
 
-# Initialize FastAPI with lifespan
+
+# Initialize FastAPI
 app = FastAPI(
     title="Employee Handbook Chatbot API",
-    description="RAG-based chatbot for Navneet Education employee handbook with adaptive retrieval",
+    description="Production-ready RAG chatbot with adaptive retrieval and caching",
     version="2.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
+    docs_url="/docs",
+    redoc_url="/redoc"
 )
 
-# CORS
+# CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Change to specific domain in production
+    allow_origins=["*"],  # In production: specify exact origins
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Request models
-class Question(BaseModel):
-    question: str
-    
-class InitRequest(BaseModel):
-    force_rebuild: Optional[bool] = False
 
-# Response models
+# Request/Response models
+class Question(BaseModel):
+    question: str = Field(..., min_length=1, max_length=500, description="Question to ask")
+    include_metadata: Optional[bool] = Field(False, description="Include retrieval metadata")
+
+
+class InitRequest(BaseModel):
+    force_rebuild: Optional[bool] = Field(False, description="Force rebuild vector store")
+
+
 class AnswerResponse(BaseModel):
     question: str
     answer: str
     response_time: float
+    cached: Optional[bool] = False
+    metadata: Optional[Dict] = None
 
-# Health check
+
+class HealthResponse(BaseModel):
+    status: str
+    model: str
+    ready: bool
+    cache_enabled: bool
+    uptime: Optional[float] = None
+
+
+# Middleware for request timing
+@app.middleware("http")
+async def add_process_time_header(request: Request, call_next):
+    start_time = time.time()
+    response = await call_next(request)
+    process_time = time.time() - start_time
+    response.headers["X-Process-Time"] = str(round(process_time, 3))
+    return response
+
+
+# Exception handler
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unhandled exception: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error occurred"}
+    )
+
+
+# Routes
 @app.get("/")
 async def root():
+    """API information endpoint"""
     return {
         "service": "Employee Handbook Chatbot",
         "status": "running",
         "version": "2.0.0",
         "features": [
-            "Adaptive retrieval (dynamic k)",
-            "Multi-chunk aggregation",
-            "Question breadth classification",
-            "Distributed information handling"
+            "Adaptive retrieval (dynamic k-selection)",
+            "Maximum Marginal Relevance (MMR) for diversity",
+            "Response caching for speed",
+            "Multi-stage confidence scoring",
+            "Optimized chunk processing",
+            "Concurrent request handling"
         ],
-        "initialized": chatbot.is_initialized if chatbot else False
+        "initialized": chatbot.is_initialized if chatbot else False,
+        "endpoints": {
+            "chat": "/ask",
+            "health": "/health",
+            "stats": "/stats",
+            "examples": "/examples",
+            "docs": "/docs"
+        }
     }
 
-@app.get("/health")
+
+@app.get("/health", response_model=HealthResponse)
 async def health():
+    """Health check endpoint"""
     return {
-        "status": "healthy" if chatbot and chatbot.is_initialized else "initializing",
+        "status": "healthy" if (chatbot and chatbot.is_initialized) else "initializing",
         "model": config.LLM_MODEL,
-        "ready": chatbot.is_initialized if chatbot else False
+        "ready": chatbot.is_initialized if chatbot else False,
+        "cache_enabled": config.ENABLE_RESPONSE_CACHE
     }
 
-# Initialize/rebuild endpoint
+
 @app.post("/initialize")
 async def initialize(request: InitRequest):
+    """Initialize or rebuild the chatbot"""
     global chatbot
+    
     if not chatbot:
         chatbot = HandbookChatbot()
     
-    success = chatbot.initialize(force_rebuild=request.force_rebuild)
-    
-    if success:
-        return {"status": "success", "message": "Chatbot initialized successfully"}
-    else:
-        raise HTTPException(status_code=500, detail="Failed to initialize chatbot")
+    try:
+        success = chatbot.initialize(force_rebuild=request.force_rebuild)
+        
+        if success:
+            logger.info("✓ Chatbot reinitialized")
+            return {
+                "status": "success",
+                "message": "Chatbot initialized successfully",
+                "force_rebuild": request.force_rebuild
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Initialization failed")
+            
+    except Exception as e:
+        logger.error(f"Initialization error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-# Main query endpoint
+
 @app.post("/ask", response_model=AnswerResponse)
 async def ask_question(question: Question):
+    """
+    Main chat endpoint with optimized processing.
+    Handles concurrent requests with semaphore.
+    """
+    # Validation
     if not chatbot or not chatbot.is_initialized:
-        raise HTTPException(status_code=503, detail="Chatbot not initialized. Please wait or call /initialize")
+        raise HTTPException(
+            status_code=503,
+            detail="Chatbot not initialized. Please wait or call /initialize"
+        )
     
     if not question.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty")
     
-    # Limit concurrent requests
+    # Rate limiting with semaphore
     async with semaphore:
         start_time = time.time()
         
-        # Run in thread pool to not block
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, chatbot.ask, question.question)
-        
-        response_time = time.time() - start_time
-        
-        if result.get("success"):
-            return {
-                "question": question.question,
-                "answer": result["answer"],
-                "response_time": round(response_time, 2)
-            }
-        else:
-            raise HTTPException(status_code=500, detail=result.get("error", "Unknown error"))
+        try:
+            # Run in executor to avoid blocking event loop
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                chatbot.ask,
+                question.question
+            )
+            
+            response_time = time.time() - start_time
+            
+            # Track metrics
+            request_times.append(response_time)
+            if len(request_times) > 100:  # Keep last 100
+                request_times.pop(0)
+            
+            if result.get("success"):
+                response = {
+                    "question": question.question,
+                    "answer": result["answer"],
+                    "response_time": round(response_time, 2),
+                    "cached": result.get("cached", False)
+                }
+                
+                # Include metadata if requested
+                if question.include_metadata and "metadata" in result:
+                    response["metadata"] = result["metadata"]
+                
+                logger.info(f"✓ Answered in {response_time:.2f}s (cached: {result.get('cached', False)})")
+                return response
+            else:
+                raise HTTPException(
+                    status_code=500,
+                    detail=result.get("error", "Unknown error")
+                )
+                
+        except Exception as e:
+            logger.error(f"Error processing question: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
 
-# Example questions - updated to show breadth variety
+
 @app.get("/examples")
 async def get_examples():
+    """Get example questions by complexity"""
     return {
         "examples": {
             "narrow": [
                 "What is the probation period?",
                 "What are the office timings?",
-                "What is the retirement age?"
+                "What is the retirement age?",
+                "How many casual leaves per year?"
             ],
             "medium": [
-                "How many casual leaves do I get?",
                 "How do I apply for maternity leave?",
-                "What is the notice period for resignation?"
+                "What is the notice period for resignation?",
+                "What are the working hours?",
+                "When can I avail earned leave?"
             ],
             "broad": [
-                "What benefits are provided?",
                 "What are all the leave policies?",
-                "Tell me about compensation",
-                "What insurance coverage do we have?"
+                "Tell me about employee benefits",
+                "What insurance coverage is provided?",
+                "Explain the compensation structure",
+                "What are the different types of leaves?"
             ]
-        }
+        },
+        "tips": [
+            "Be specific for faster, more accurate answers",
+            "Use natural language - no special formatting needed",
+            "Broad questions may take slightly longer but provide comprehensive answers"
+        ]
     }
 
-# Stats endpoint
+
 @app.get("/stats")
 async def get_stats():
+    """Get system statistics and performance metrics"""
     if not chatbot or not chatbot.vectorstore:
-        return {"error": "Not initialized"}
+        raise HTTPException(status_code=503, detail="Chatbot not initialized")
     
-    return {
-        "total_chunks": chatbot.vectorstore._collection.count(),
-        "model": config.LLM_MODEL,
-        "embedding_model": config.EMBEDDING_MODEL,
-        "max_concurrent": config.MAX_CONCURRENT_REQUESTS,
-        "retrieval_strategy": "adaptive",
-        "k_range": f"{config.RETRIEVAL_K_MIN}-{config.RETRIEVAL_K_MAX}"
-    }
+    try:
+        total_chunks = chatbot.vectorstore._collection.count()
+        
+        # Calculate metrics
+        avg_response_time = sum(request_times) / len(request_times) if request_times else 0
+        
+        cache_info = {}
+        if chatbot.response_cache:
+            cache_info = {
+                "enabled": True,
+                "size": len(chatbot.response_cache.cache),
+                "capacity": chatbot.response_cache.capacity,
+                "hit_rate": "tracked_in_logs"
+            }
+        
+        return {
+            "vectorstore": {
+                "total_chunks": total_chunks,
+                "chunk_size": config.CHUNK_SIZE,
+                "chunk_overlap": config.CHUNK_OVERLAP
+            },
+            "models": {
+                "llm": config.LLM_MODEL,
+                "embedding": config.EMBEDDING_MODEL
+            },
+            "retrieval": {
+                "strategy": "adaptive_mmr",
+                "k_range": f"{config.RETRIEVAL_K_MIN}-{config.RETRIEVAL_K_MAX}",
+                "use_mmr": config.USE_MMR,
+                "mmr_lambda": config.MMR_LAMBDA if config.USE_MMR else None
+            },
+            "performance": {
+                "max_concurrent_requests": config.MAX_CONCURRENT_REQUESTS,
+                "avg_response_time": round(avg_response_time, 2),
+                "total_requests_tracked": len(request_times)
+            },
+            "cache": cache_info,
+            "llm_config": {
+                "temperature": config.LLM_TEMPERATURE,
+                "context_window": config.NUM_CTX,
+                "max_tokens": config.NUM_PREDICT
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.get("/cache/clear")
+async def clear_cache():
+    """Clear the response cache"""
+    if not chatbot or not chatbot.response_cache:
+        return {"message": "Cache not enabled or chatbot not initialized"}
+    
+    chatbot.response_cache.cache.clear()
+    logger.info("Cache cleared")
+    return {"message": "Cache cleared successfully"}
+
+
+# Development server
 if __name__ == "__main__":
     import uvicorn
+    
+    logger.info("Starting development server...")
     uvicorn.run(
         app,
         host=config.API_HOST,
         port=config.API_PORT,
-        log_level="info"
+        log_level=config.LOG_LEVEL.lower(),
+        access_log=True
     )
