@@ -7,7 +7,7 @@ import time
 import os
 from contextlib import asynccontextmanager
 
-from google import genai
+import google.generativeai as genai
 
 # --------------------------------------------------
 # ENV SETUP
@@ -22,8 +22,10 @@ API_KEY = os.getenv("GEMINI_API_KEY")
 if not API_KEY:
     raise RuntimeError("GEMINI_API_KEY not set")
 
-MODEL_ID = "gemini-2.0-flash-lite"
-client = genai.Client(api_key=API_KEY)
+genai.configure(api_key=API_KEY)
+
+MODEL_ID = "gemini-2.0-flash"  # Updated to a valid model ID
+model = genai.GenerativeModel(MODEL_ID)
 
 uploaded_file = None
 
@@ -38,7 +40,7 @@ async def lifespan(app: FastAPI):
     if not pdf_path.exists():
         raise RuntimeError("emp.pdf not found")
 
-    uploaded_file = client.files.upload(file=pdf_path)
+    uploaded_file = genai.upload_file(pdf_path)
     print(f"✅ PDF uploaded: {uploaded_file.name}")
 
     yield  # ---- app runs here ----
@@ -95,10 +97,7 @@ Question:
 """
 
     try:
-        response = client.models.generate_content(
-            model=MODEL_ID,
-            contents=[uploaded_file, prompt],
-        )
+        response = model.generate_content([uploaded_file, prompt])
 
         answer = response.text.strip() if response.text else "No response."
 
