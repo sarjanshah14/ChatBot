@@ -32,13 +32,15 @@ uploaded_file = None
 # --------------------------------------------------
 # LIFESPAN (REPLACES on_event)
 # --------------------------------------------------
+BASE_DIR = Path(__file__).resolve().parent
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global uploaded_file
 
-    pdf_path = Path("emp.pdf")
+    pdf_path = BASE_DIR / "emp.pdf"
     if not pdf_path.exists():
-        raise RuntimeError("emp.pdf not found")
+        raise RuntimeError(f"emp.pdf not found at {pdf_path}")
 
     uploaded_file = genai.upload_file(pdf_path)
     print(f"✅ PDF uploaded: {uploaded_file.name}")
@@ -58,7 +60,7 @@ app = FastAPI(
 )
 @app.get("/")
 def home():
-    return FileResponse("index.html")
+    return FileResponse(BASE_DIR / "index.html")
 
 app.add_middleware(
     CORSMiddleware,
