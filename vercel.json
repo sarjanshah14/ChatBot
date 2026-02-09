@@ -8,6 +8,10 @@
     ],
     "routes": [
         {
+            "src": "/ask",
+            "dest": "app.py"
+        },
+        {
             "src": "/(.*)",
             "dest": "app.py"
         }
