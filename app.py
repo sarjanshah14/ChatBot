@@ -5,7 +5,6 @@ from pydantic import BaseModel
 from pathlib import Path
 import time
 import os
-from contextlib import asynccontextmanager
 from typing import Dict, Optional
 
 import google.generativeai as genai
@@ -21,26 +20,27 @@ except ImportError:
 
 API_KEY = os.getenv("GEMINI_API_KEY")
 if not API_KEY:
-    raise RuntimeError("GEMINI_API_KEY not set")
+    # Important: In Vercel, if this is missing, the app will crash.
+    # We allow it to start but check during request to give better error.
+    print("⚠️ WARNING: GEMINI_API_KEY environment variable is not set!")
 
-genai.configure(api_key=API_KEY)
+genai.configure(api_key=API_KEY or "DUMMY_KEY")
 
 MODEL_ID = "gemini-2.0-flash"
 model = genai.GenerativeModel(MODEL_ID)
 
-# Store uploaded files in a dictionary: {payroll_area: uploaded_file_object}
+# Store uploaded files in a dictionary: {filename: uploaded_file_object}
 uploaded_files: Dict[str, any] = {}
 BASE_DIR = Path(__file__).resolve().parent
 
 # --------------------------------------------------
-# LIFESPAN
+# HELPERS
 # --------------------------------------------------
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    global uploaded_files
-
-    # Mapping of payroll areas to their respective PDF filenames
-    # Currently mapping all N1-N4 codes to the core emp.pdf handbook
+async def get_pdf_for_area(area_code: str):
+    """Retrieves or uploads the PDF for a specific area code."""
+    area = area_code.lower()
+    
+    # Mapping of codes to files
     pdf_mapping = {
         "n1": "emp.pdf",
         "n2": "emp.pdf",
@@ -50,47 +50,40 @@ async def lifespan(app: FastAPI):
         "gujarat": "gujarat.pdf",
         "default": "emp.pdf"
     }
+    
+    filename = pdf_mapping.get(area, "emp.pdf")
+    pdf_path = BASE_DIR / filename
+    
+    if not pdf_path.exists():
+        # Fallback to emp.pdf if specific file missing
+        pdf_path = BASE_DIR / "emp.pdf"
+        if not pdf_path.exists():
+            return None
 
-    for area, filename in pdf_mapping.items():
-        pdf_path = BASE_DIR / filename
-        # Only upload if the file exists and hasn't been uploaded yet (to avoid duplicates for N1-N4)
-        if pdf_path.exists() and filename not in [f.display_name for f in uploaded_files.values() if hasattr(f, 'display_name')]:
-            try:
-                uploaded_file = genai.upload_file(str(pdf_path))
-                uploaded_files[area.lower()] = uploaded_file
-                print(f"✅ PDF uploaded for {area}: {filename}")
-            except Exception as e:
-                print(f"❌ Failed to upload {filename}: {e}")
-        elif pdf_path.exists():
-            # If file already uploaded for another key, reuse the reference
-            for existing_area, existing_file in uploaded_files.items():
-                # This is a bit of a shortcut, we'll just check if the filename matches our mapping
-                if pdf_mapping.get(existing_area) == filename:
-                    uploaded_files[area.lower()] = existing_file
-                    break
+    # Check if we already uploaded this file in this instance session
+    if filename in uploaded_files:
+        return uploaded_files[filename]
 
-    # Always ensure at least the default 'emp.pdf' is attemptedly loaded
-    if "default" not in uploaded_files:
-        default_path = BASE_DIR / "emp.pdf"
-        if default_path.exists():
-            uploaded_files["default"] = genai.upload_file(str(default_path))
-            print("✅ Default PDF (emp.pdf) uploaded.")
-
-    yield
-    print("🛑 App shutting down")
+    # Upload to Gemini (Gemini keeps files for 48 hours)
+    try:
+        if not API_KEY:
+            raise ValueError("GEMINI_API_KEY is missing in Vercel settings")
+            
+        print(f"Uploading {filename} to Gemini...")
+        uploaded_file = genai.upload_file(str(pdf_path))
+        uploaded_files[filename] = uploaded_file
+        return uploaded_file
+    except Exception as e:
+        print(f"Upload failed: {e}")
+        return None
 
 # --------------------------------------------------
 # FASTAPI SETUP
 # --------------------------------------------------
 app = FastAPI(
     title="HR Chatbot API",
-    version="1.1.1",
-    lifespan=lifespan
+    version="1.1.2"
 )
-
-@app.get("/")
-def home():
-    return FileResponse(BASE_DIR / "index.html")
 
 app.add_middleware(
     CORSMiddleware,
@@ -99,6 +92,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.get("/")
+def home():
+    # Serve index.html as the main entry point
+    return FileResponse(BASE_DIR / "index.html")
 
 class QuestionRequest(BaseModel):
     question: str
@@ -109,13 +107,16 @@ class QuestionRequest(BaseModel):
 # --------------------------------------------------
 @app.post("/ask")
 async def ask_question(request: QuestionRequest):
+    if not API_KEY:
+         raise HTTPException(status_code=500, detail="GEMINI_API_KEY not configured on server")
+
     area_code = (request.payroll_area or "default").lower()
     
-    # Select the PDF based on payroll area, fallback to default if not found
-    pdf_to_use = uploaded_files.get(area_code) or uploaded_files.get("default")
+    # Get PDF on demand
+    pdf_to_use = await get_pdf_for_area(area_code)
 
     if not pdf_to_use:
-        raise HTTPException(status_code=503, detail="Policy documents not loaded")
+        raise HTTPException(status_code=503, detail="Policy documents (PDF) could not be loaded")
 
     if not request.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty")
@@ -143,7 +144,7 @@ Question:
         return {
             "answer": answer,
             "response_time": round(time.time() - start_time, 2),
-            "region_context": area
+            "region_context": area_code
         }
 
     except Exception as e:
