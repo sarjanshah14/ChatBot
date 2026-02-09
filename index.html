@@ -672,32 +672,33 @@
             sendButton.disabled = true;
 
             try {
-                // Call existing API
                 const response = await fetch(`${API_URL}/ask`, {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         question: text,
                         payroll_area: userInfo.payrollarea || 'default'
                     })
                 });
 
-                const data = await response.json();
+                let data;
+                try {
+                    data = await response.json();
+                } catch (e) {
+                    data = { detail: "Server returned a non-JSON error (Check Vercel logs)" };
+                }
 
                 if (!response.ok) {
                     throw new Error(data.detail || `Server error: ${response.status}`);
                 }
 
-                // Remove typing and add response
                 removeTyping();
                 addMessage(data.answer, 'bot', data.response_time);
 
             } catch (error) {
                 console.error('API Error:', error);
                 removeTyping();
-                addMessage(`Error: ${error.message || "Could not reach server"}. Please check if the GEMINI_API_KEY is set in Vercel.`, 'bot');
+                addMessage(`❌ <b>Backend Error:</b> ${error.message}`, 'bot');
             } finally {
                 sendButton.disabled = false;
                 messageInput.focus();
