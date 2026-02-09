@@ -434,7 +434,6 @@
         const API_URL = ''; // Relative path for deployment
 
         // DOM Elements
-        // Check local scope for this widget instance effectively
         const widgetRoot = document.getElementById('hr-chatbot-widget');
         const chatWidget = widgetRoot.querySelector('#chatWidget');
         const chatbotToggle = widgetRoot.querySelector('#chatbotToggle');
@@ -448,12 +447,38 @@
         let isRecording = false;
         let recognition = null;
 
+        // User Info Context
+        let userInfo = {
+            name: 'Employee',
+            empid: '',
+            payrollarea: 'default'
+        };
+
+        // --- Fetch User Data from URL ---
+        function fetchUserData() {
+            const urlParams = new URLSearchParams(window.location.search);
+            if (urlParams.has('name')) userInfo.name = urlParams.get('name');
+            if (urlParams.has('empid')) userInfo.empid = urlParams.get('empid');
+            if (urlParams.has('payrollarea')) userInfo.payrollarea = urlParams.get('payrollarea');
+
+            updateGreeting();
+        }
+
+        function updateGreeting() {
+            const firstMessage = messagesContainer.querySelector('.message.bot .message-bubble');
+            if (firstMessage) {
+                const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                firstMessage.innerHTML = `Hi <b>${userInfo.name}</b>! I'm your HR assistant. How can I help you today?
+                <div class="message-time">${time}</div>`;
+            }
+        }
+
         // Initialize Speech Recognition
         function initSpeechRecognition() {
             if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
                 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
                 recognition = new SpeechRecognition();
-                recognition.lang = 'en-IN'; // Set to Indian English as requested
+                recognition.lang = 'en-IN';
                 recognition.continuous = false;
                 recognition.interimResults = true;
 
@@ -484,12 +509,13 @@
                 };
             } else {
                 console.warn('Speech recognition not supported');
-                micButton.style.display = 'none'; // Hide if not supported
+                micButton.style.display = 'none';
             }
         }
 
         // Initialize
         initSpeechRecognition();
+        fetchUserData();
 
         // Functions
         function toggleChat() {
@@ -506,7 +532,6 @@
 
         function toggleRecording() {
             if (!recognition) return;
-
             if (isRecording) {
                 stopRecording();
             } else {
@@ -515,11 +540,7 @@
         }
 
         function startRecording() {
-            try {
-                recognition.start();
-            } catch (e) {
-                console.error("Recognition start error:", e);
-            }
+            try { recognition.start(); } catch (e) { }
         }
 
         function stopRecording() {
@@ -527,9 +548,7 @@
         }
 
         function handleKeyPress(e) {
-            if (e.key === 'Enter') {
-                sendMessage();
-            }
+            if (e.key === 'Enter') sendMessage();
         }
 
         window.askEx = function (text) {
@@ -562,10 +581,10 @@
             typingDiv.id = 'typingIndicator';
             typingDiv.innerHTML = `
                 <div class="message-bubble" style="padding: 10px 16px;">
-                    <div class="typing">
-                        <div class="typing-dot"></div>
-                        <div class="typing-dot"></div>
-                        <div class="typing-dot"></div>
+                    <div class="typing" style="display: flex; gap: 4px; padding: 4px 8px;">
+                        <div class="typing-dot" style="width: 6px; height: 6px; background: #9ca3af; border-radius: 50%; animation: bounce 1.4s infinite ease-in-out both;"></div>
+                        <div class="typing-dot" style="width: 6px; height: 6px; background: #9ca3af; border-radius: 50%; animation: bounce 1.4s infinite ease-in-out both; animation-delay: -0.32s;"></div>
+                        <div class="typing-dot" style="width: 6px; height: 6px; background: #9ca3af; border-radius: 50%; animation: bounce 1.4s infinite ease-in-out both; animation-delay: -0.16s;"></div>
                     </div>
                 </div>
             `;
@@ -586,38 +605,31 @@
             const text = messageInput.value.trim();
             if (!text) return;
 
-            // Add user message
             addMessage(text, 'user');
             messageInput.value = '';
-
-            // Show typing indicator
             showTyping();
             sendButton.disabled = true;
 
             try {
-                // Call existing API
                 const response = await fetch(`${API_URL}/ask`, {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ question: text })
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        question: text,
+                        payroll_area: userInfo.payrollarea
+                    })
                 });
 
-                if (!response.ok) {
-                    throw new Error(`Server error: ${response.status}`);
-                }
+                if (!response.ok) throw new Error(`Server error: ${response.status}`);
 
                 const data = await response.json();
-
-                // Remove typing and add response
                 removeTyping();
                 addMessage(data.answer, 'bot', data.response_time);
 
             } catch (error) {
                 console.error('API Error:', error);
                 removeTyping();
-                addMessage("Sorry, I couldn't reach the server. Please ensure the backend is running.", 'bot');
+                addMessage("Sorry, I couldn't reach the server.", 'bot');
             } finally {
                 sendButton.disabled = false;
                 messageInput.focus();

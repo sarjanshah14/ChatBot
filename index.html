@@ -373,6 +373,30 @@
             border-color: var(--accent-color);
             transform: translateY(-1px);
         }
+
+        /* Embedded Mode Styles */
+        body.embedded {
+            background: transparent;
+            min-height: auto;
+        }
+
+        body.embedded .chat-widget {
+            position: relative;
+            bottom: auto;
+            right: auto;
+            width: 100%;
+            height: 100vh;
+            max-height: none;
+            display: flex;
+            opacity: 1;
+            transform: none;
+            border-radius: 0;
+            box-shadow: none;
+        }
+
+        body.embedded .chatbot-toggle {
+            display: none !important;
+        }
     </style>
 </head>
 
@@ -468,6 +492,38 @@
         let isRecording = false;
         let recognition = null;
 
+        // User Info Context
+        let userInfo = {
+            name: 'Employee',
+            empid: '',
+            payrollarea: 'default'
+        };
+
+        // --- Fetch User Data from URL ---
+        function fetchUserData() {
+            const urlParams = new URLSearchParams(window.location.search);
+            if (urlParams.has('name')) userInfo.name = urlParams.get('name');
+            if (urlParams.has('empid')) userInfo.empid = urlParams.get('empid');
+            if (urlParams.has('payrollarea')) userInfo.payrollarea = urlParams.get('payrollarea');
+
+            // Handle Embedded Mode
+            if (urlParams.get('mode') === 'embedded') {
+                document.body.classList.add('embedded');
+                isOpen = true;
+            }
+
+            updateGreeting();
+        }
+
+        function updateGreeting() {
+            const firstMessage = messagesContainer.querySelector('.message.bot .message-bubble');
+            if (firstMessage) {
+                const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                firstMessage.innerHTML = `Hi <b>${userInfo.name}</b>! I'm your HR assistant. How can I help you today?
+                <div class="message-time">${time}</div>`;
+            }
+        }
+
         // Initialize Speech Recognition
         function initSpeechRecognition() {
             if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
@@ -510,6 +566,7 @@
 
         // Initialize
         initSpeechRecognition();
+        fetchUserData();
 
         // Functions
         function toggleChat() {
@@ -621,7 +678,10 @@
                     headers: {
                         'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify({ question: text })
+                    body: JSON.stringify({
+                        question: text,
+                        payroll_area: userInfo.payrollarea
+                    })
                 });
 
                 if (!response.ok) {
