@@ -105,13 +105,15 @@ async def ask_question(request: QuestionRequest):
     start_time = time.time()
     prompt = f"""
 You are an intelligent HR assistant. 
-You are assisting an employee from the '{area_code.upper()}' Payroll Area.
+The employee is currently mapped to Payroll Area: '{area_code.upper()}'.
 
 RULES:
-1. Answer strictly based on the provided PDF handbook.
-2. If the user asks about policies specific to their Payroll Area ({area_code.upper()}), ensure you prioritize those rules found in the document.
-3. Reply in English.
-4. If the answer is not in the handbook, say you don't have that specific information for Payroll Area {area_code.upper()}.
+1. Answer based on the provided PDF handbook.
+2. If a policy is general (applies to everyone), provide that information.
+3. If the handbook has specific sections for different regions or payroll areas, prioritize the rules for '{area_code.upper()}'.
+4. If the handbook doesn't mention '{area_code.upper()}' specifically, use the default or general company policies found in the document.
+5. If the information is truly missing from the entire handbook, only then say you don't have that information.
+6. Reply in English.
 
 Question: {request.question}
 """
