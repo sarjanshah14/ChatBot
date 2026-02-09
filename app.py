@@ -40,24 +40,34 @@ async def lifespan(app: FastAPI):
     global uploaded_files
 
     # Mapping of payroll areas to their respective PDF filenames
-    # In a real scenario, you'd place these files in the directory
+    # Currently mapping all N1-N4 codes to the core emp.pdf handbook
     pdf_mapping = {
-        "Maharashtra": "maharashtra.pdf",
-        "Gujarat": "gujarat.pdf",
+        "n1": "emp.pdf",
+        "n2": "emp.pdf",
+        "n3": "emp.pdf",
+        "n4": "emp.pdf",
+        "maharashtra": "maharashtra.pdf",
+        "gujarat": "gujarat.pdf",
         "default": "emp.pdf"
     }
 
     for area, filename in pdf_mapping.items():
         pdf_path = BASE_DIR / filename
-        if pdf_path.exists():
+        # Only upload if the file exists and hasn't been uploaded yet (to avoid duplicates for N1-N4)
+        if pdf_path.exists() and filename not in [f.display_name for f in uploaded_files.values() if hasattr(f, 'display_name')]:
             try:
                 uploaded_file = genai.upload_file(str(pdf_path))
                 uploaded_files[area.lower()] = uploaded_file
                 print(f"✅ PDF uploaded for {area}: {filename}")
             except Exception as e:
                 print(f"❌ Failed to upload {filename}: {e}")
-        else:
-            print(f"⚠️ Warning: {filename} not found at {pdf_path}. Fallback will be used.")
+        elif pdf_path.exists():
+            # If file already uploaded for another key, reuse the reference
+            for existing_area, existing_file in uploaded_files.items():
+                # This is a bit of a shortcut, we'll just check if the filename matches our mapping
+                if pdf_mapping.get(existing_area) == filename:
+                    uploaded_files[area.lower()] = existing_file
+                    break
 
     # Always ensure at least the default 'emp.pdf' is attemptedly loaded
     if "default" not in uploaded_files:
@@ -74,7 +84,7 @@ async def lifespan(app: FastAPI):
 # --------------------------------------------------
 app = FastAPI(
     title="HR Chatbot API",
-    version="1.1.0",
+    version="1.1.1",
     lifespan=lifespan
 )
 
@@ -99,10 +109,10 @@ class QuestionRequest(BaseModel):
 # --------------------------------------------------
 @app.post("/ask")
 async def ask_question(request: QuestionRequest):
-    area = (request.payroll_area or "default").lower()
+    area_code = (request.payroll_area or "default").lower()
     
     # Select the PDF based on payroll area, fallback to default if not found
-    pdf_to_use = uploaded_files.get(area) or uploaded_files.get("default")
+    pdf_to_use = uploaded_files.get(area_code) or uploaded_files.get("default")
 
     if not pdf_to_use:
         raise HTTPException(status_code=503, detail="Policy documents not loaded")
@@ -114,13 +124,13 @@ async def ask_question(request: QuestionRequest):
 
     prompt = f"""
 You are an intelligent HR assistant. 
-You are assisting an employee from the {area.capitalize()} region.
+You are assisting an employee from the '{area_code.upper()}' Payroll Area/Region.
 
 RULES:
 1. Answer strictly based on the provided PDF handbook.
-2. If the user asks about state-specific policies, ensure you prioritize the {area.capitalize()} rules found in the document.
+2. If the user asks about policies specific to their Payroll Area ({area_code.upper()}), ensure you prioritize those rules found in the document.
 3. Reply in English.
-4. If the answer is not in the handbook, say you don't have that information for the {area.capitalize()} region.
+4. If the answer is not in the handbook, say you don't have that specific information for Payroll Area {area_code.upper()}.
 
 Question:
 {request.question}
