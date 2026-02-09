@@ -26,7 +26,7 @@ else:
     print("⚠️ WARNING: GEMINI_API_KEY not found in environment variables!")
 
 # Global model instance
-model = genai.GenerativeModel("gemini-1.5-flash") # Using 1.5-flash for maximum stability
+model = genai.GenerativeModel("gemini-2.0-flash")
 
 # Cache for uploaded files
 uploaded_files: Dict[str, any] = {}
@@ -50,7 +50,7 @@ def get_pdf_for_area(area_code: str):
 # --------------------------------------------------
 # FASTAPI APP
 # --------------------------------------------------
-app = FastAPI(title="HR Chatbot API", version="1.2.1")
+app = FastAPI(title="HR Chatbot API", version="1.2.2")
 
 app.add_middleware(
     CORSMiddleware,
