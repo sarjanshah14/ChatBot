@@ -680,15 +680,15 @@
                     },
                     body: JSON.stringify({
                         question: text,
-                        payroll_area: userInfo.payrollarea
+                        payroll_area: userInfo.payrollarea || 'default'
                     })
                 });
 
-                if (!response.ok) {
-                    throw new Error(`Server error: ${response.status}`);
-                }
-
                 const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.detail || `Server error: ${response.status}`);
+                }
 
                 // Remove typing and add response
                 removeTyping();
@@ -697,7 +697,7 @@
             } catch (error) {
                 console.error('API Error:', error);
                 removeTyping();
-                addMessage("Sorry, I couldn't reach the server. Please ensure the backend is running.", 'bot');
+                addMessage(`Error: ${error.message || "Could not reach server"}. Please check if the GEMINI_API_KEY is set in Vercel.`, 'bot');
             } finally {
                 sendButton.disabled = false;
                 messageInput.focus();
